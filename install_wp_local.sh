@@ -12,7 +12,7 @@ WP_ADMIN="admin"
 WP_ADMIN_PASS="$(openssl rand -base64 16)"
 WP_ADMIN_EMAIL="admin@example.com"
 WEB_ROOT="/var/www/$SITE_DOMAIN"
-PHP_VERSION="8.1"                    # Cambiar si usas otra versión disponible
+PHP_VERSION="8.4"                    # Cambiar si usas otra versión disponible
 ###############################################################################
 
 log(){ printf "\e[32m>> %s\e[0m\n" "$1"; }
