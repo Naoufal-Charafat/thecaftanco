@@ -1,136 +1,72 @@
 #!/usr/bin/env bash
-# install_wp_local.sh — despliega WordPress + dependencias en localhost
 set -euo pipefail
-IFS=$'\n\t'
 
-##################### CONFIGURACIÓN ###########################################
-SITE_DOMAIN="thecaftan.local"       # Nombre de dominio local (añadido a /etc/hosts)
-DB_NAME="wp_caftan"
-DB_USER="wp_user"
-DB_PASS="$(openssl rand -base64 16)"   # Genera una contraseña aleatoria
+#####  CONFIGURA AQUÍ TUS VARIABLES  #####
+WP_VERSION="6.8.1"                # Última versión estable (30 abr 2025) :contentReference[oaicite:0]{index=0}
+SITE_PATH="/var/www/html/the-caftan-co"
+DB_NAME="caftan_db"
+DB_USER="caftan_user"
+DB_PASS="changeme"
+WP_URL="http://localhost/the-caftan-co"
+WP_TITLE="The Caftan Co"
 WP_ADMIN="admin"
-WP_ADMIN_PASS="$(openssl rand -base64 16)"
+WP_ADMIN_PASS="admin123"
 WP_ADMIN_EMAIL="admin@example.com"
-WEB_ROOT="/var/www/$SITE_DOMAIN"
-                    # Cambiar si usas otra versión disponible
-###############################################################################
+#########################################
 
-log(){ printf "\e[32m>> %s\e[0m\n" "$1"; }
+echo "==> Instalando dependencias del servidor web y PHP"
+if command -v apt-get &>/dev/null; then
+  PM="apt-get"
+elif command -v dnf &>/dev/null; then
+  PM="dnf"
+elif command -v pacman &>/dev/null; then
+  PM="pacman -S --noconfirm"
+else
+  echo "❌ No se encontró un gestor de paquetes compatible (apt, dnf, pacman)."
+  exit 1
+fi
 
-need_root(){
-   if [[ $EUID -ne 0 ]]; then
-      echo "Este script debe ejecutarse como root." >&2; exit 1
-   fi
-}
+sudo $PM update -y
+sudo $PM install -y apache2 mariadb-server php php-mysql php-xml php-curl php-gd php-zip php-mbstring php-intl unzip curl
 
-install_packages(){
-  log "Actualizando repos e instalando paquetes..."
-  apt-get update -qq
-  DEBIAN_FRONTEND=noninteractive apt-get install -yq \
-    apache2 mariadb-server php${PHP_VERSION} php${PHP_VERSION}-{common,curl,gd,mbstring,xml,zip,mysql} \
-    libapache2-mod-php${PHP_VERSION} curl unzip wget less
-}
+echo "==> Habilitando y arrancando Apache y MariaDB"
+sudo systemctl enable --now apache2 mariadb
 
-configure_mariadb(){
-  log "Configurando MariaDB y creando base de datos..."
-  systemctl enable --now mariadb
-  mysql -u root <<SQL
-CREATE DATABASE IF NOT EXISTS ${DB_NAME} DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';
-GRANT ALL PRIVILEGES ON ${DB_NAME}.* TO '${DB_USER}'@'localhost';
-FLUSH PRIVILEGES;
-SQL
-}
+echo "==> Creando base de datos y usuario"
+sudo mysql -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+sudo mysql -e "CREATE USER IF NOT EXISTS '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PASS';"
+sudo mysql -e "GRANT ALL PRIVILEGES ON \`$DB_NAME\`.* TO '$DB_USER'@'localhost'; FLUSH PRIVILEGES;"
 
-download_wordpress(){
-  log "Descargando WordPress..."
-  mkdir -p "$WEB_ROOT"
-  curl -sL https://wordpress.org/latest.tar.gz | tar -xz --strip-components=1 -C "$WEB_ROOT"
-  cp "$WEB_ROOT/wp-config-sample.php" "$WEB_ROOT/wp-config.php"
-  sed -i "s/database_name_here/${DB_NAME}/" "$WEB_ROOT/wp-config.php"
-  sed -i "s/username_here/${DB_USER}/" "$WEB_ROOT/wp-config.php"
-  sed -i "s/password_here/${DB_PASS}/" "$WEB_ROOT/wp-config.php"
-  log "Añadiendo claves únicas de seguridad..."
-  SALTS=$(curl -s https://api.wordpress.org/secret-key/1.1/salt/)
-  sed -i "/AUTH_KEY/,$ d" "$WEB_ROOT/wp-config.php"
-  printf '%s\n' "$SALTS" >> "$WEB_ROOT/wp-config.php"
-}
-
-configure_apache(){
-  log "Configurando host virtual en Apache..."
-  cat > /etc/apache2/sites-available/${SITE_DOMAIN}.conf <<VHOST
-<VirtualHost *:80>
-    ServerName ${SITE_DOMAIN}
-    DocumentRoot ${WEB_ROOT}
-    <Directory ${WEB_ROOT}>
-        AllowOverride All
-        Require all granted
-    </Directory>
-    ErrorLog \${APACHE_LOG_DIR}/${SITE_DOMAIN}_error.log
-    CustomLog \${APACHE_LOG_DIR}/${SITE_DOMAIN}_access.log combined
-</VirtualHost>
-VHOST
-
-  a2enmod rewrite
-  a2ensite ${SITE_DOMAIN}.conf
-  systemctl reload apache2
-  echo "127.0.0.1  ${SITE_DOMAIN}" >> /etc/hosts
-}
-
-set_permissions(){
-  log "Ajustando permisos..."
-  chown -R www-data:www-data "$WEB_ROOT"
-  find "$WEB_ROOT" -type d -exec chmod 755 {} \;
-  find "$WEB_ROOT" -type f -exec chmod 644 {} \;
-}
-
-install_wp_cli(){
-  log "Instalando WP-CLI..."
-  curl -sO https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
-  php wp-cli.phar --info >/dev/null
+echo "==> Instalando WP-CLI (método phar recomendado) :contentReference[oaicite:1]{index=1}"
+if ! command -v wp &>/dev/null; then
+  curl -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
+  php wp-cli.phar --info   # prueba rápida
   chmod +x wp-cli.phar
-  mv wp-cli.phar /usr/local/bin/wp
-}
+  sudo mv wp-cli.phar /usr/local/bin/wp
+fi
 
-bootstrap_wordpress(){
-  log "Inicializando sitio WordPress (WP-CLI)..."
-  sudo -u www-data wp core install \
-    --url="http://${SITE_DOMAIN}" \
-    --title="The Caftan Co" \
-    --admin_user="${WP_ADMIN}" \
-    --admin_password="${WP_ADMIN_PASS}" \
-    --admin_email="${WP_ADMIN_EMAIL}" \
-    --path="${WEB_ROOT}" --skip-email
-}
+echo "==> Descargando WordPress $WP_VERSION"
+sudo mkdir -p "$SITE_PATH" && sudo chown "$USER":www-data "$SITE_PATH"
+cd "$SITE_PATH"
+wp core download --version="$WP_VERSION"
 
-print_credentials(){
-  cat <<EOF
+echo "==> Generando wp-config.php y salts"
+cp wp-config-sample.php wp-config.php
+wp config set DB_NAME "$DB_NAME"
+wp config set DB_USER "$DB_USER"
+wp config set DB_PASSWORD "$DB_PASS"
+wp config set WP_DEBUG true
+wp config shuffle-salts
 
-========================================
-WordPress instalado correctamente 🎉
-URL:   http://${SITE_DOMAIN}
-Admin: ${WP_ADMIN}
-Pass:  ${WP_ADMIN_PASS}
+echo "==> Instalando WordPress"
+wp core install \
+  --url="$WP_URL" \
+  --title="$WP_TITLE" \
+  --admin_user="$WP_ADMIN" \
+  --admin_password="$WP_ADMIN_PASS" \
+  --admin_email="$WP_ADMIN_EMAIL"
 
-Base de datos:
-  nombre  : ${DB_NAME}
-  usuario : ${DB_USER}
-  clave   : ${DB_PASS}
-========================================
-Añade "127.0.0.1 ${SITE_DOMAIN}" a tu archivo hosts si no se añadió automáticamente.
-EOF
-}
+echo "==> Ajustando permisos finales"
+sudo chown -R www-data:www-data "$SITE_PATH"
 
-main(){
-  need_root
-  install_packages
-  configure_mariadb
-  download_wordpress
-  configure_apache
-  set_permissions
-  install_wp_cli
-  bootstrap_wordpress
-  print_credentials
-}
-
-main "$@"
+echo "✅ WordPress $WP_VERSION está listo en $WP_URL"
